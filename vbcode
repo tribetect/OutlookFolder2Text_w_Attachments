@@ -1,0 +1,168 @@
+Option Explicit
+
+Public Sub ExportEmailsAsPlainTextWithAttachments()
+    Dim objNamespace As Outlook.NameSpace
+    Dim rootFolder As Outlook.MAPIFolder
+    Dim fy24Folder As Outlook.MAPIFolder
+    Dim targetFolder As Outlook.MAPIFolder
+    Dim objItem As Object
+    Dim objMail As Outlook.MailItem
+    Dim objAttachment As Outlook.Attachment
+    Dim txtContent As String
+    Dim rawSubject As String
+    Dim safeSubject As String
+    Dim txtFileName As String
+    Dim attachmentPath As String
+    Dim saveFolder As String
+    Dim counter As Long
+    Dim i As Integer
+    Dim fileNum As Integer
+    
+    ' === CONFIGURATION ===
+    saveFolder = "C:\EmailExport\"
+    ' =====================
+    
+    ' Get the namespace
+    Set objNamespace = Application.Session
+    
+    ' Get the root mailbox folder (usually the first item in Folders collection)
+    ' This handles cases where FY24 is a top-level folder alongside Inbox
+    Set rootFolder = objNamespace.Folders(1)
+    
+    Debug.Print "Checking root folder: " & rootFolder.Name
+    
+    ' Try to find FY24 at the root level first
+    On Error Resume Next
+    Set fy24Folder = rootFolder.Folders("FY24")
+    On Error GoTo 0
+    
+    ' If not found at root, check inside Inbox (fallback)
+    If fy24Folder Is Nothing Then
+        Debug.Print "FY24 not found at root. Checking Inbox..."
+        Set fy24Folder = objNamespace.GetDefaultFolder(olFolderInbox).Folders("FY24")
+    End If
+    
+    If fy24Folder Is Nothing Then
+        MsgBox "Error: Folder 'FY24' not found at root level or inside Inbox.", vbCritical
+        Exit Sub
+    End If
+    
+    ' Now look for "11 May" inside FY24
+    On Error Resume Next
+    Set targetFolder = fy24Folder.Folders("11 May")
+    On Error GoTo 0
+    
+    If targetFolder Is Nothing Then
+        MsgBox "Error: Folder '11 May' not found inside FY24.", vbCritical
+        Exit Sub
+    End If
+    
+    Debug.Print "Target folder found: " & targetFolder.FullFolderPath
+    
+    ' Create save folder if it doesn't exist
+    On Error Resume Next
+    MkDir saveFolder
+    On Error GoTo 0
+    
+    ' Create subfolder for attachments
+    attachmentPath = saveFolder & "Attachments\"
+    On Error Resume Next
+    MkDir attachmentPath
+    On Error GoTo 0
+    
+    counter = 0
+    Debug.Print "Starting export from: " & targetFolder.FullFolderPath
+    
+    ' Loop through all items in the target folder
+    For Each objItem In targetFolder.Items
+        ' Ensure we are only processing mail items
+        If TypeOf objItem Is Outlook.MailItem Then
+            Set objMail = objItem
+            
+            ' --- SAFE FILENAME GENERATION ---
+            rawSubject = objMail.Subject
+            If Len(rawSubject) = 0 Then rawSubject = "(No Subject)"
+            
+            ' Remove illegal Windows filename characters
+            safeSubject = rawSubject
+            safeSubject = Replace(safeSubject, "\", "")
+            safeSubject = Replace(safeSubject, "/", "")
+            safeSubject = Replace(safeSubject, ":", "")
+            safeSubject = Replace(safeSubject, "*", "")
+            safeSubject = Replace(safeSubject, "?", "")
+            safeSubject = Replace(safeSubject, """", "")
+            safeSubject = Replace(safeSubject, "<", "")
+            safeSubject = Replace(safeSubject, ">", "")
+            safeSubject = Replace(safeSubject, "|", "")
+            
+            ' Truncate if too long
+            If Len(safeSubject) > 50 Then safeSubject = Left(safeSubject, 50)
+            
+            ' Construct filename
+            On Error Resume Next
+            txtFileName = Format(objMail.ReceivedTime, "yyyymmdd_hhnnss") & "_" & safeSubject & ".txt"
+            If Err.Number <> 0 Then
+                txtFileName = "UnknownDate_" & counter & ".txt"
+                Err.Clear
+            End If
+            On Error GoTo 0
+            
+            ' Ensure unique filename if duplicates exist
+            If Dir(saveFolder & txtFileName) <> "" Then
+                txtFileName = Format(objMail.ReceivedTime, "yyyymmdd_hhnnss") & "_" & safeSubject & "_" & counter & ".txt"
+            End If
+            
+            ' --- BUILD CONTENT ---
+            txtContent = "FROM: " & objMail.SenderName & vbCrLf
+            txtContent = txtContent & "TO: " & objMail.To & vbCrLf
+            txtContent = txtContent & "CC: " & objMail.CC & vbCrLf
+            txtContent = txtContent & "SUBJECT: " & objMail.Subject & vbCrLf
+            
+            On Error Resume Next
+            txtContent = txtContent & "DATE: " & Format(objMail.ReceivedTime, "yyyy-mm-dd hh:mm:ss") & vbCrLf
+            On Error GoTo 0
+            
+            txtContent = txtContent & "----------------------------------------" & vbCrLf & vbCrLf
+            txtContent = txtContent & objMail.Body & vbCrLf
+            
+            ' --- SAVE FILE WITH ERROR HANDLING ---
+            On Error Resume Next
+            fileNum = FreeFile
+            Open saveFolder & txtFileName For Output As #fileNum
+            If Err.Number <> 0 Then
+                Debug.Print "Error opening file: " & txtFileName & " - " & Err.Description
+                Err.Clear
+                On Error GoTo 0
+                GoTo NextEmail
+            End If
+            
+            Print #fileNum, txtContent
+            Close #fileNum
+            On Error GoTo 0
+            
+            ' --- SAVE ATTACHMENTS ---
+            If objMail.Attachments.Count > 0 Then
+                For i = 1 To objMail.Attachments.Count
+                    Set objAttachment = objMail.Attachments.Item(i)
+                    On Error Resume Next
+                    objAttachment.SaveAsFile attachmentPath & objAttachment.FileName
+                    On Error GoTo 0
+                Next i
+            End If
+            
+            counter = counter + 1
+            
+            ' Optional: Print progress every 10 emails
+            If counter Mod 10 = 0 Then
+                Debug.Print "Exported " & counter & " emails..."
+            End If
+        End If
+NextEmail:
+    Next objItem
+    
+    Debug.Print "Export complete! Total: " & counter
+    MsgBox "Export complete!" & vbCrLf & _
+           "Total emails processed: " & counter & vbCrLf & _
+           "Text files saved to: " & saveFolder & vbCrLf & _
+           "Attachments saved to: " & attachmentPath, vbInformation
+End Sub
